@@ -1,229 +1,312 @@
 import sqlite3
 from datetime import datetime, timedelta
 import hashlib
-import getpass
+import os
+import psycopg2
 
+# trigger streamlit restart
 class AttendanceSystem:
     def __init__(self):
+        # Detect cloud database (Postgres)
+        self.use_postgres = "DATABASE_URL" in os.environ
+
+        # DEBUG
+        print("USING POSTGRES:", self.use_postgres)
+
+        # SQLite path (local only)
         self.db_path = "attendance.db"
+
         self.init_database()
 
+    # ---------------- DATABASE CONNECTION ----------------
+
+    def get_connection(self):
+        if self.use_postgres:
+            return psycopg2.connect(
+                os.environ["DATABASE_URL"],
+                sslmode="require"
+            )
+        else:
+            return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    # Placeholder helper
+    def q(self):
+        return "%s" if self.use_postgres else "?"
+
+    def placeholders(self, n):
+        return ", ".join([self.q()] * n)
+
+    # ---------------- DATABASE INIT ----------------
+
     def init_database(self):
-        """Initialize SQLite database"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_connection()
         c = conn.cursor()
 
-        # Employees table
-        c.execute('''CREATE TABLE IF NOT EXISTS employees
-        (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  employee_id TEXT UNIQUE NOT NULL,
-                  name TEXT NOT NULL,
-                  pin_hash TEXT NOT NULL,
-                  department TEXT,
-                  added_date TEXT
-        )''')
+        if self.use_postgres:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS employees (
+                    id SERIAL PRIMARY KEY,
+                    employee_id TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    pin_hash TEXT NOT NULL,
+                    department TEXT,
+                    added_date TEXT
+                );
+            """)
 
-        # Attendance Table
-        c.execute('''CREATE TABLE IF NOT EXISTS attendance
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  employee_id TEXT,
-                  employee_name TEXT,
-                  date TEXT,
-                  shift TEXT,
-                  time TEXT,
-                  UNIQUE(employee_id, date, shift))''')
-        
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS attendance (
+                    id SERIAL PRIMARY KEY,
+                    employee_id TEXT,
+                    employee_name TEXT,
+                    date TEXT,
+                    shift TEXT,
+                    time TEXT,
+                    UNIQUE(employee_id, date, shift)
+                );
+            """)
+        else:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS employees (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    employee_id TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    pin_hash TEXT NOT NULL,
+                    department TEXT,
+                    added_date TEXT
+                );
+            """)
+
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS attendance (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    employee_id TEXT,
+                    employee_name TEXT,
+                    date TEXT,
+                    shift TEXT,
+                    time TEXT,
+                    UNIQUE(employee_id, date, shift)
+                );
+            """)
+
         conn.commit()
         conn.close()
         print("✓ Database initialized successfully")
 
+    # ---------------- SECURITY ----------------
+
     def hash_pin(self, pin):
-        """Hash PIN for secure storage"""
         return hashlib.sha256(pin.encode()).hexdigest()
 
+    # ---------------- EMPLOYEES ----------------
+
     def register_employee(self, employee_id, name, pin, department="Data Entry"):
-        """Register a new employee"""
         if len(pin) < 4:
             return False, "PIN must be at least 4 digits"
-        
-        pin_hash = self.hash_pin(pin)
 
-        conn = sqlite3.connect(self.db_path)
+        pin_hash = self.hash_pin(pin)
+        conn = self.get_connection()
         c = conn.cursor()
 
         try:
-            c.execute("""INSERT INTO employees (employee_id, name, pin_hash, department, added_date)
-                    VALUES (?, ?, ?, ?, ?)""",
-                 (employee_id, name, pin_hash, department, 
-                  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            c.execute(
+                f"""INSERT INTO employees
+                    (employee_id, name, pin_hash, department, added_date)
+                    VALUES ({self.placeholders(5)})""",
+                (
+                    employee_id,
+                    name,
+                    pin_hash,
+                    department,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                )
+            )
             conn.commit()
             return True, f"✓ Employee {name} (ID: {employee_id}) registered successfully"
-        except sqlite3.IntegrityError:  #This catches the duplicate
+        except (sqlite3.IntegrityError, psycopg2.errors.UniqueViolation):
             return False, f"✗ Employee ID {employee_id} already exists"
         finally:
             conn.close()
 
     def verify_employee(self, employee_id, pin):
-        """Verify employee ID and PIN"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute("SELECT name, pin_hash FROM employees WHERE employee_id = ?", 
-             (employee_id,))
+        c.execute(
+            f"SELECT name, pin_hash FROM employees WHERE employee_id = {self.q()}",
+            (employee_id,)
+        )
         result = c.fetchone()
         conn.close()
 
-        if result is None:
+        if not result:
             return False, None, "Employee ID not found"
-        
-        name, stored_hash = result
 
-        if self.hash_pin(pin) == stored_hash:
-            return True, name, "Verified"
-        else:
-            return False, None, "Incorrect PIN"
-    
+        name, stored_hash = result
+        return (
+            True,
+            name,
+            "Verified"
+        ) if self.hash_pin(pin) == stored_hash else (
+            False,
+            None,
+            "Incorrect PIN"
+        )
+
+    # ---------------- ATTENDANCE ----------------
+
     def mark_attendance(self, employee_id, shift):
-        """Mark attendance for an employee"""
         today = datetime.now().strftime("%Y-%m-%d")
         current_time = datetime.now().strftime("%H:%M:%S")
 
-        # Get employee name
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute("SELECT name FROM employees WHERE employee_id = ?", (employee_id,))
+        c.execute(
+            f"SELECT name FROM employees WHERE employee_id = {self.q()}",
+            (employee_id,)
+        )
         result = c.fetchone()
 
-        if result is None:
+        if not result:
             conn.close()
             return False, "Employee not found"
-        
+
         employee_name = result[0]
 
         try:
-            c.execute("""INSERT INTO attendance (employee_id, employee_name, date, shift, time)
-                    VALUES (?, ?, ?, ?, ?)""",
-                 (employee_id, employee_name, today, shift, current_time))
+            c.execute(
+                f"""INSERT INTO attendance
+                    (employee_id, employee_name, date, shift, time)
+                    VALUES ({self.placeholders(5)})""",
+                (
+                    employee_id,
+                    employee_name,
+                    today,
+                    shift,
+                    current_time
+                )
+            )
             conn.commit()
-            conn.close()
-            return True, f"✓ Attendance marked for {employee_name} - {shift} shift at {current_time}"
-        except sqlite3.IntegrityError:
-            conn.close()
+            return True, f"✓ Attendance marked for {employee_name} - {shift} shift"
+        except (sqlite3.IntegrityError, psycopg2.errors.UniqueViolation):
             return False, f"✗ {employee_name} already marked for {shift} shift today"
-        
+        finally:
+            conn.close()
+
+    # ---------------- REPORTS ----------------
+
     def get_all_employees(self):
-        """Get list of all employees"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute("SELECT employee_id, name, department, added_date FROM employees ORDER BY name")
-        employees = c.fetchall()
+        c.execute(
+            "SELECT employee_id, name, department, added_date FROM employees ORDER BY name"
+        )
+        rows = c.fetchall()
         conn.close()
+        return rows
 
-        return employees
-    
-    def get_attendance_report(self, start_date=None, end_date=None):
-        """Get attendance report for date range"""
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-
-        if start_date and end_date:
-            c.execute("""SELECT employee_id, employee_name, date, shift, time 
-                    FROM attendance 
-                    WHERE date BETWEEN ? AND ?
-                    ORDER BY date DESC, time DESC""",
-                 (start_date, end_date))
-        else:
-            c.execute("""SELECT employee_id, employee_name, date, shift, time 
-                    FROM attendance 
-                    ORDER BY date DESC, time DESC
-                    LIMIT 50""")
-        
-        records = c.fetchall()
-        conn.close()
-        return records
-        
     def get_today_attendance(self):
-        """Get today's attendance"""
         today = datetime.now().strftime("%Y-%m-%d")
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute("""SELECT employee_id, employee_name, shift, time 
-                FROM attendance 
-                WHERE date = ?
-                ORDER BY time DESC""", (today,))
-        
-        records = c.fetchall()
+        c.execute(
+            f"""SELECT employee_id, employee_name, shift, time
+                FROM attendance
+                WHERE date = {self.q()}
+                ORDER BY time DESC""",
+            (today,)
+        )
+        rows = c.fetchall()
         conn.close()
-        return records
-    
-    def get_missed_days(self, employee_id, start_date, end_date):
-        """Get days when employee was absent"""
-        conn = sqlite3.connect(self.db_path)
+        return rows
+
+    def get_attendance_report(self, start_date, end_date):
+        conn = self.get_connection()
         c = conn.cursor()
 
-        # Get employee name
-        c.execute("SELECT name FROM employees WHERE employee_id = ?", (employee_id,))
+        c.execute(
+            f"""SELECT employee_id, employee_name, date, shift, time
+                FROM attendance
+                WHERE date BETWEEN {self.q()} AND {self.q()}
+                ORDER BY date DESC, time DESC""",
+            (start_date, end_date)
+        )
+
+        rows = c.fetchall()
+        conn.close()
+        return rows
+
+    def get_missed_days(self, employee_id, start_date, end_date):
+        conn = self.get_connection()
+        c = conn.cursor()
+
+        c.execute(
+            f"SELECT name FROM employees WHERE employee_id = {self.q()}",
+            (employee_id,)
+        )
         result = c.fetchone()
-        if result is None:
+
+        if not result:
             conn.close()
             return None, "Employee not found"
-        
+
         employee_name = result[0]
 
-        # Get present dates
-        c.execute("""SELECT DISTINCT date FROM attendance 
-                WHERE employee_id = ? AND date BETWEEN ? AND ?""",
-             (employee_id, start_date, end_date))
-        
-        present_dates = set(row[0] for row in c.fetchall())
+        c.execute(
+            f"""SELECT DISTINCT date FROM attendance
+                WHERE employee_id = {self.q()}
+                AND date BETWEEN {self.q()} AND {self.q()}""",
+            (employee_id, start_date, end_date)
+        )
+
+        present_days = {row[0] for row in c.fetchall()}
         conn.close()
 
-        # Generate all weekdays in range
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
-        all_dates = set()
 
+        all_days = set()
         current = start
         while current <= end:
-            # Skip weekends (Saturday=5, Sunday=6)
             if current.weekday() < 5:
-                all_dates.add(current.strftime("%Y-%m-%d"))
+                all_days.add(current.strftime("%Y-%m-%d"))
             current += timedelta(days=1)
 
-        missed_dates = sorted(all_dates - present_dates, reverse=True)
-        return (employee_name, missed_dates), None
+        missed = sorted(all_days - present_days)
+        return (employee_name, missed), None
 
     def delete_employee(self, employee_id):
-        """Delete an employee and their attendance records"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_connection()
         c = conn.cursor()
 
-        # Check if employee exists
-        c.execute("SELECT name FROM employees WHERE employee_id = ?", (employee_id,))
+        c.execute(
+            f"SELECT name FROM employees WHERE employee_id = {self.q()}",
+            (employee_id,)
+        )
         result = c.fetchone()
 
-        if result is None:
+        if not result:
             conn.close()
             return False, "Employee not found"
 
         name = result[0]
 
-        # Delete attendance records
-        c.execute("DELETE FROM attendance WHERE employee_id = ?", (employee_id,))
-
-        # Delete employee
-        c.execute("DELETE FROM employees WHERE employee_id = ?", (employee_id,))
+        c.execute(
+            f"DELETE FROM attendance WHERE employee_id = {self.q()}",
+            (employee_id,)
+        )
+        c.execute(
+            f"DELETE FROM employees WHERE employee_id = {self.q()}",
+            (employee_id,)
+        )
 
         conn.commit()
         conn.close()
-
         return True, f"✓ Employee {name} and all records deleted"
-
 
 def main_menu():
     """Main menu interface"""
