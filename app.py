@@ -579,7 +579,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style='text-align: center; color: #6c757d; padding: 1rem;'>
-        <small>Indexers Attendance System v1.0 | Data Entry Department | Azul Tech © 2024</small>
+        <small>Indexers Attendance System v1.0 | Data Entry Department | Azul Tech © 2025</small>
     </div>
     """,
     unsafe_allow_html=True

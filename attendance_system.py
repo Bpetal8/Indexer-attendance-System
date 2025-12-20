@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import hashlib
 import os
 import psycopg2
+from psycopg2 import errors, pool
 
 # trigger streamlit restart
 class AttendanceSystem:
@@ -16,18 +17,46 @@ class AttendanceSystem:
         # SQLite path (local only)
         self.db_path = "attendance.db"
 
+        self.connection_pool = None
+        if self.use_postgres:
+            try:
+                self.connection_pool = pool.SimpleConnectionPool(
+                   1, 10,  # min and max connections
+                os.environ["DATABASE_URL"],
+                sslmode="require"  
+                )
+                print("✓ PostgreSQL connection pool created")
+            except Exception as e:
+                print(f"✗ Failed to create connection pool: {e}")
         self.init_database()
 
     # ---------------- DATABASE CONNECTION ----------------
 
     def get_connection(self):
         if self.use_postgres:
-            return psycopg2.connect(
-                os.environ["DATABASE_URL"],
-                sslmode="require"
-            )
+            if self.connection_pool:
+                try:
+                    return self.connection_pool.getconn()
+                except Exception as e:
+                    print(f"Pool connection failed, using direct: {e}")
+                    return psycopg2.connect(
+                        os.environ["DATABASE_URL"],
+                        sslmode="require"
+                    )
+            else:
+                return psycopg2.connect(
+                    os.environ["DATABASE_URL"],
+                    sslmode="require"
+                )
         else:
             return sqlite3.connect(self.db_path, check_same_thread=False)
+    
+    def close_connection(self, conn):
+        """Properly close or return connection to pool"""
+        if self.use_postgres and self.connection_pool:
+            self.connection_pool.putconn(conn)
+        else:
+            conn.close()
 
     # Placeholder helper
     def q(self):
@@ -42,56 +71,61 @@ class AttendanceSystem:
         conn = self.get_connection()
         c = conn.cursor()
 
-        if self.use_postgres:
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS employees (
-                    id SERIAL PRIMARY KEY,
-                    employee_id TEXT UNIQUE NOT NULL,
-                    name TEXT NOT NULL,
-                    pin_hash TEXT NOT NULL,
-                    department TEXT,
-                    added_date TEXT
-                );
-            """)
+        try:
+            if self.use_postgres:
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS employees (
+                        id SERIAL PRIMARY KEY,
+                        employee_id TEXT UNIQUE NOT NULL,
+                        name TEXT NOT NULL,
+                        pin_hash TEXT NOT NULL,
+                        department TEXT,
+                        added_date TEXT
+                    );
+                """)
 
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS attendance (
-                    id SERIAL PRIMARY KEY,
-                    employee_id TEXT,
-                    employee_name TEXT,
-                    date TEXT,
-                    shift TEXT,
-                    time TEXT,
-                    UNIQUE(employee_id, date, shift)
-                );
-            """)
-        else:
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS employees (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    employee_id TEXT UNIQUE NOT NULL,
-                    name TEXT NOT NULL,
-                    pin_hash TEXT NOT NULL,
-                    department TEXT,
-                    added_date TEXT
-                );
-            """)
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS attendance (
+                        id SERIAL PRIMARY KEY,
+                        employee_id TEXT,
+                        employee_name TEXT,
+                        date TEXT,
+                        shift TEXT,
+                        time TEXT,
+                        UNIQUE(employee_id, date, shift)
+                    );
+                """)
+            else:
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS employees (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        employee_id TEXT UNIQUE NOT NULL,
+                        name TEXT NOT NULL,
+                        pin_hash TEXT NOT NULL,
+                        department TEXT,
+                        added_date TEXT
+                    );
+                """)
 
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS attendance (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    employee_id TEXT,
-                    employee_name TEXT,
-                    date TEXT,
-                    shift TEXT,
-                    time TEXT,
-                    UNIQUE(employee_id, date, shift)
-                );
-            """)
+                c.execute("""
+                    CREATE TABLE IF NOT EXISTS attendance (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        employee_id TEXT,
+                        employee_name TEXT,
+                        date TEXT,
+                        shift TEXT,
+                        time TEXT,
+                        UNIQUE(employee_id, date, shift)
+                    );
+                """)
 
-        conn.commit()
-        conn.close()
-        print("✓ Database initialized successfully")
+            conn.commit()
+            print("✓ Database initialized successfully")
+        except Exception as e:
+            print(f"✗ Database initialization failed: {e}")
+            raise
+        finally:
+            self.close_connection(conn)
 
     # ---------------- SECURITY ----------------
 
@@ -123,35 +157,41 @@ class AttendanceSystem:
             )
             conn.commit()
             return True, f"✓ Employee {name} (ID: {employee_id}) registered successfully"
-        except (sqlite3.IntegrityError, psycopg2.errors.UniqueViolation):
+        except (sqlite3.IntegrityError, errors.UniqueViolation):
+            conn.rollback()
             return False, f"✗ Employee ID {employee_id} already exists"
+        except Exception as e:
+            conn.rollback()
+            return False, f"✗ Registration failed: {str(e)}"
         finally:
-            conn.close()
-
+            self.close_connection(conn)
+    
     def verify_employee(self, employee_id, pin):
         conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute(
-            f"SELECT name, pin_hash FROM employees WHERE employee_id = {self.q()}",
-            (employee_id,)
-        )
-        result = c.fetchone()
-        conn.close()
+        try:
+            c.execute(
+                f"SELECT name, pin_hash FROM employees WHERE employee_id = {self.q()}",
+                (employee_id,)
+            )
+            result = c.fetchone()
 
-        if not result:
-            return False, None, "Employee ID not found"
+            if not result:
+                return False, None, "Employee ID not found"
 
-        name, stored_hash = result
-        return (
-            True,
-            name,
-            "Verified"
-        ) if self.hash_pin(pin) == stored_hash else (
-            False,
-            None,
-            "Incorrect PIN"
-        )
+            name, stored_hash = result
+            return (
+                True,
+                name,
+                "Verified"
+            ) if self.hash_pin(pin) == stored_hash else (
+                False,
+                None,
+                "Incorrect PIN"
+            )
+        finally:
+            self.close_connection(conn)
 
     # ---------------- ATTENDANCE ----------------
 
@@ -162,19 +202,18 @@ class AttendanceSystem:
         conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute(
-            f"SELECT name FROM employees WHERE employee_id = {self.q()}",
-            (employee_id,)
-        )
-        result = c.fetchone()
-
-        if not result:
-            conn.close()
-            return False, "Employee not found"
-
-        employee_name = result[0]
-
         try:
+            c.execute(
+                f"SELECT name FROM employees WHERE employee_id = {self.q()}",
+                (employee_id,)
+            )
+            result = c.fetchone()
+
+            if not result:
+                return False, "Employee not found"
+
+            employee_name = result[0]
+
             c.execute(
                 f"""INSERT INTO attendance
                     (employee_id, employee_name, date, shift, time)
@@ -189,10 +228,14 @@ class AttendanceSystem:
             )
             conn.commit()
             return True, f"✓ Attendance marked for {employee_name} - {shift} shift"
-        except (sqlite3.IntegrityError, psycopg2.errors.UniqueViolation):
-            return False, f"✗ {employee_name} already marked for {shift} shift today"
+        except (sqlite3.IntegrityError, errors.UniqueViolation):
+            conn.rollback()
+            return False, f"✗ Attendance already marked for {shift} shift today"
+        except Exception as e:
+            conn.rollback()
+            return False, f"✗ Failed to mark attendance: {str(e)}"
         finally:
-            conn.close()
+            self.close_connection(conn)
 
     # ---------------- REPORTS ----------------
 
@@ -200,12 +243,14 @@ class AttendanceSystem:
         conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute(
-            "SELECT employee_id, name, department, added_date FROM employees ORDER BY name"
-        )
-        rows = c.fetchall()
-        conn.close()
-        return rows
+        try:
+            c.execute(
+                "SELECT employee_id, name, department, added_date FROM employees ORDER BY name"
+            )
+            rows = c.fetchall()
+            return rows
+        finally:
+            self.close_connection(conn)
 
     def get_today_attendance(self):
         today = datetime.now().strftime("%Y-%m-%d")
@@ -213,100 +258,114 @@ class AttendanceSystem:
         conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute(
-            f"""SELECT employee_id, employee_name, shift, time
-                FROM attendance
-                WHERE date = {self.q()}
-                ORDER BY time DESC""",
-            (today,)
-        )
-        rows = c.fetchall()
-        conn.close()
-        return rows
+        try:
+            c.execute(
+                f"""SELECT employee_id, employee_name, shift, time
+                    FROM attendance
+                    WHERE date = {self.q()}
+                    ORDER BY time DESC""",
+                (today,)
+            )
+            rows = c.fetchall()
+            return rows
+        finally:
+            self.close_connection(conn)
 
     def get_attendance_report(self, start_date, end_date):
         conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute(
-            f"""SELECT employee_id, employee_name, date, shift, time
-                FROM attendance
-                WHERE date BETWEEN {self.q()} AND {self.q()}
-                ORDER BY date DESC, time DESC""",
-            (start_date, end_date)
-        )
-
-        rows = c.fetchall()
-        conn.close()
-        return rows
+        try:
+            c.execute(
+                f"""SELECT employee_id, employee_name, date, shift, time
+                    FROM attendance
+                    WHERE date BETWEEN {self.q()} AND {self.q()}
+                    ORDER BY date DESC, time DESC""",
+                (start_date, end_date)
+            )
+            rows = c.fetchall()
+            return rows
+        finally:
+            self.close_connection(conn)
 
     def get_missed_days(self, employee_id, start_date, end_date):
         conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute(
-            f"SELECT name FROM employees WHERE employee_id = {self.q()}",
-            (employee_id,)
-        )
-        result = c.fetchone()
+        try:
+            c.execute(
+                f"SELECT name FROM employees WHERE employee_id = {self.q()}",
+                (employee_id,)
+            )
+            result = c.fetchone()
 
-        if not result:
-            conn.close()
-            return None, "Employee not found"
+            if not result:
+                return None, "Employee not found"
 
-        employee_name = result[0]
+            employee_name = result[0]
 
-        c.execute(
-            f"""SELECT DISTINCT date FROM attendance
-                WHERE employee_id = {self.q()}
-                AND date BETWEEN {self.q()} AND {self.q()}""",
-            (employee_id, start_date, end_date)
-        )
+            c.execute(
+                f"""SELECT DISTINCT date FROM attendance
+                    WHERE employee_id = {self.q()}
+                    AND date BETWEEN {self.q()} AND {self.q()}""",
+                (employee_id, start_date, end_date)
+            )
 
-        present_days = {row[0] for row in c.fetchall()}
-        conn.close()
+            present_days = {row[0] for row in c.fetchall()}
 
-        start = datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.strptime(end_date, "%Y-%m-%d")
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
 
-        all_days = set()
-        current = start
-        while current <= end:
-            if current.weekday() < 5:
-                all_days.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+            all_days = set()
+            current = start
+            while current <= end:
+                if current.weekday() < 5:
+                    all_days.add(current.strftime("%Y-%m-%d"))
+                current += timedelta(days=1)
 
-        missed = sorted(all_days - present_days)
-        return (employee_name, missed), None
+            missed = sorted(all_days - present_days)
+            return (employee_name, missed), None
+        finally:
+            self.close_connection(conn)
 
     def delete_employee(self, employee_id):
         conn = self.get_connection()
         c = conn.cursor()
 
-        c.execute(
-            f"SELECT name FROM employees WHERE employee_id = {self.q()}",
-            (employee_id,)
-        )
-        result = c.fetchone()
+        try:
+            c.execute(
+                f"SELECT name FROM employees WHERE employee_id = {self.q()}",
+                (employee_id,)
+            )
+            result = c.fetchone()
 
-        if not result:
-            conn.close()
-            return False, "Employee not found"
+            if not result:
+                return False, "Employee not found"
 
-        name = result[0]
+            name = result[0]
 
-        c.execute(
-            f"DELETE FROM attendance WHERE employee_id = {self.q()}",
-            (employee_id,)
-        )
-        c.execute(
-            f"DELETE FROM employees WHERE employee_id = {self.q()}",
-            (employee_id,)
-        )
+            c.execute(
+                f"DELETE FROM attendance WHERE employee_id = {self.q()}",
+                (employee_id,)
+            )
+            c.execute(
+                f"DELETE FROM employees WHERE employee_id = {self.q()}",
+                (employee_id,)
+            )
 
-        conn.commit()
-        conn.close()
-        return True, f"✓ Employee {name} and all records deleted"
+            conn.commit()
+            return True, f"✓ Employee {name} and all records deleted"
+        except Exception as e:
+            conn.rollback()
+            return False, f"✗ Deletion failed: {str(e)}"
+        finally:
+            self.close_connection(conn)
+
+    def __del__(self):
+        """Cleanup connection pool on deletion"""
+        if self.connection_pool:
+            self.connection_pool.closeall()
+
 
 def main_menu():
     """Main menu interface"""
