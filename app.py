@@ -39,12 +39,7 @@ if "page" not in st.session_state:
     st.session_state.page = "dashboard"
 
 
-# initialize system
-@st.cache_resource
-def get_system():
-    return AttendanceSystem()
-
-system = get_system()
+system = AttendanceSystem()
 
 # Cache dashboard data for performance
 @st.cache_data(ttl=30)
