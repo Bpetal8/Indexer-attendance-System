@@ -50,7 +50,7 @@ def get_dashboard_data():
     }
 
 if not st.session_state.logged_in:
-    st.markdown('<div class="main-header">🔐 Admin Login</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header"> Admin Login</div>', unsafe_allow_html=True)
     
     # Check if admin exists
     if not system.admin_exists():
@@ -87,7 +87,7 @@ if not st.session_state.logged_in:
             username = st.text_input("Username", placeholder="Enter your username")
             password = st.text_input("Password", type="password", placeholder="Enter your password")
             
-            submitted = st.form_submit_button("🔓 Login", use_container_width=True)
+            submitted = st.form_submit_button(" Login", use_container_width=True)
             
             if submitted:
                 if not username or not password:
@@ -127,7 +127,7 @@ for label, key in menu_items:
 
 st.sidebar.markdown("---")
 
-if st.sidebar.button("🚪 Logout", use_container_width=True):  # ← CORRECT POSITION
+if st.sidebar.button(" Logout", use_container_width=True):  # ← CORRECT POSITION
     st.session_state.logged_in = False
     st.session_state.admin_username = None
     st.session_state.page = "dashboard"
