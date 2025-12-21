@@ -31,6 +31,10 @@ footer {
 """, unsafe_allow_html=True)
 
 # ---- SESSION STATE (INIT ONCE) ----
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "admin_username" not in st.session_state:
+    st.session_state.admin_username = None
 if "page" not in st.session_state:
     st.session_state.page = "dashboard"
 
@@ -50,9 +54,65 @@ def get_dashboard_data():
         'employees': system.get_all_employees()
     }
 
+if not st.session_state.logged_in:
+    st.markdown('<div class="main-header">🔐 Admin Login</div>', unsafe_allow_html=True)
+    
+    # Check if admin exists
+    if not system.admin_exists():
+        st.info("👋 **Welcome!** No admin account exists yet. Please create one to get started.")
+        
+        with st.form("setup_form"):
+            st.markdown("### Create Admin Account")
+            username = st.text_input("Username", placeholder="Enter admin username")
+            password = st.text_input("Password", type="password", placeholder="Minimum 6 characters")
+            password_confirm = st.text_input("Confirm Password", type="password", placeholder="Re-enter password")
+            
+            submitted = st.form_submit_button("✅ Create Admin Account", use_container_width=True)
+            
+            if submitted:
+                if not username or not password:
+                    st.error("⚠️ Please fill in all fields")
+                elif password != password_confirm:
+                    st.error("⚠️ Passwords do not match")
+                elif len(password) < 6:
+                    st.error("⚠️ Password must be at least 6 characters")
+                else:
+                    success, msg = system.register_admin(username, password)
+                    if success:
+                        st.success(f"✅ {msg}")
+                        st.info("Please login with your new credentials below.")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+    
+    else:
+        # Login form
+        with st.form("login_form"):
+            st.markdown("### Login to Continue")
+            username = st.text_input("Username", placeholder="Enter your username")
+            password = st.text_input("Password", type="password", placeholder="Enter your password")
+            
+            submitted = st.form_submit_button("🔓 Login", use_container_width=True)
+            
+            if submitted:
+                if not username or not password:
+                    st.error("⚠️ Please enter both username and password")
+                else:
+                    success, msg = system.verify_admin(username, password)
+                    if success:
+                        st.session_state.logged_in = True
+                        st.session_state.admin_username = username
+                        st.success(f"✅ Welcome back, {username}!")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+
+    st.stop()
+
+
 # ---- SIDEBAR ----
 st.sidebar.title("📋 Navigation")
-
+st.sidebar.markdown(f"**Logged in as:** {st.session_state.admin_username}")
 st.sidebar.markdown("---")
 
 menu_items = [
@@ -71,10 +131,18 @@ for label, key in menu_items:
         st.rerun()
 
 st.sidebar.markdown("---")
+
+if st.sidebar.button("🚪 Logout", use_container_width=True):  # ← CORRECT POSITION
+    st.session_state.logged_in = False
+    st.session_state.admin_username = None
+    st.session_state.page = "dashboard"
+    st.rerun()
+
+st.sidebar.markdown("---")
 st.sidebar.info(
     "**Indexers Attendance System**\n"
     "Data Entry Department\n"
-    "Version 1.0"
+    "Version 2.0"  # ← Also change to v2.0
 )
 page = st.session_state.page
 
@@ -325,32 +393,27 @@ if page == "dashboard":
 elif page == "register":
 
     st.markdown("### Register New Employee")
+    st.caption("Employee ID will be auto-generated")  # ← ADD THIS
+
 
     with st.form("register_form"):
         col1, col2 = st.columns(2)
 
         with col1:
-            employee_id = st.text_input("Employee ID *", placeholder="e.g., EMP001").upper()
             name = st.text_input("Full Name *", placeholder="e.g., John Doe")
 
         with col2:
             department = st.text_input("Department", value="Data Entry")
-            pin = st.text_input("4-Digit PIN *", type="password", max_chars=10)
-
-        pin_confirm = st.text_input("Confirm PIN *", type="password", max_chars=10)
 
         submitted = st.form_submit_button("✅ Register Employee", use_container_width=True)
 
         if submitted:
-            if not employee_id or not name or not pin:
-                st.error(" Please fill all required fields (marked with *)")
-            elif pin != pin_confirm:
-                st.error(" PINs do not match!")
+            if not name:  # ← SIMPLIFIED
+                st.error("⚠️ Please enter employee name")
             else:
-                success, msg = system.register_employee(employee_id, name, pin, department)
+                success, msg = system.register_employee(name, department)  # ← ONLY 2 PARAMS
                 if success:
                     st.success(f"✅ {msg}")
-                    # Clear cache to show new employee
                     get_dashboard_data.clear()
                 else:
                     st.error(f"❌ {msg}")
@@ -358,48 +421,50 @@ elif page == "register":
 
 elif page == "attendance":
 
-    st.markdown("### Mark Attendance")
+    st.markdown("### ✅ Mark Attendance")
+    st.caption("Select employee and shift to mark attendance")
 
-    shift = st.radio("Select Shift", ["Morning", "Afternoon"], horizontal=True)
+# Get all employees for dropdown
+    employees = system.get_all_employees()
 
-    st.markdown("---")
-
-    with st.form("attendance_form"):
-        col1, col2 = st.columns(2)
+    if not employees:
+        st.warning("⚠️ No employees registered yet. Please register employees first.")
+    else:
+        employee_options = {f"{emp[1]} ({emp[0]})": emp[0] for emp in employees}
         
-        with col1:
-            employee_id = st.text_input("Employee ID", placeholder="e.g., EMP001").upper()
-        
-        with col2:
-            pin = st.text_input("PIN", type="password", max_chars=10)
+        shift = st.radio("Select Shift", ["Morning", "Afternoon"], horizontal=True)
 
-        submitted = st.form_submit_button(f"✅ Mark {shift} Attendance", use_container_width=True)
+        st.markdown("---")
 
-        if submitted:
-            if not employee_id or not pin:
-                st.error(" Please enter both Employee ID and PIN")
-            else:
-                verified, name, msg = system.verify_employee(employee_id, pin)
-                if verified:
-                    success, res = system.mark_attendance(employee_id, shift)
+        with st.form("attendance_form"):
+            selected_employee = st.selectbox(
+                "Select Employee",
+                options=list(employee_options.keys()),
+                placeholder="Choose an employee..."
+            )
+
+            submitted = st.form_submit_button(f"✅ Mark {shift} Attendance", use_container_width=True)
+
+            if submitted:
+                if not selected_employee:
+                    st.error("⚠️ Please select an employee")
+                else:
+                    employee_id = employee_options[selected_employee]
+                    success, msg = system.mark_attendance(employee_id, shift)  # ← DIRECT CALL
+                    
                     if success:
-                        st.success(f"👋 Welcome, **{name}**!")
-                        st.success(f"✅ {res}")
-                        # Clear cache to update dashboard
+                        st.success(f"✅ {msg}")
                         get_dashboard_data.clear()
                     else:
-                        st.warning(f"⚠️ {res}")
-                else:
-                    st.error(f"❌ {msg}")
-
-    # Show today's attendance below form
-    st.markdown("---")
-    st.markdown("### Recent Attendance")
-    
-    today_records = system.get_today_attendance()
-    if today_records:
-        df = pd.DataFrame(today_records[:10], columns=["Employee ID", "Name", "Shift", "Time"])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+                        st.warning(f"⚠️ {msg}")
+        # Show today's attendance below form
+        st.markdown("---")
+        st.markdown("### Recent Attendance")
+        
+        today_records = system.get_today_attendance()
+        if today_records:
+            df = pd.DataFrame(today_records[:10], columns=["Employee ID", "Name", "Shift", "Time"])
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 elif page == "reports":
@@ -430,7 +495,7 @@ elif page == "reports":
             )
         else:
             st.info("No attendance records for today.")
-    
+
     else:  # Date Range Report
         col1, col2 = st.columns(2)
         
@@ -504,23 +569,35 @@ elif page == "missed":
 
     st.markdown("###  Check Missed Days")
 
+    # REPLACE EVERYTHING BELOW WITH THIS ↓
     with st.form("missed_days_form"):
-        employee_id = st.text_input("Employee ID", placeholder="e.g., EMP001").upper()
+        # Get all employees for dropdown
+        employees = system.get_all_employees()
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=7))
-        
-        with col2:
-            end_date = st.date_input("End Date", value=datetime.now())
-        
-        submitted = st.form_submit_button("🔍 Check Missed Days", use_container_width=True)
-        
-        if submitted:
-            if not employee_id:
-                st.error("⚠️ Please enter Employee ID")
-            else:
+        if not employees:
+            st.warning("⚠️ No employees registered yet.")
+            st.form_submit_button("Check", disabled=True)
+        else:
+            employee_options = {f"{emp[1]} ({emp[0]})": emp[0] for emp in employees}
+            
+            selected_employee = st.selectbox(
+                "Select Employee",
+                options=list(employee_options.keys())
+            )
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=7))
+            
+            with col2:
+                end_date = st.date_input("End Date", value=datetime.now())
+            
+            submitted = st.form_submit_button("🔍 Check Missed Days", use_container_width=True)
+            
+            if submitted:
+                employee_id = employee_options[selected_employee]
+                
                 result, error = system.get_missed_days(
                     employee_id,
                     start_date.strftime("%Y-%m-%d"),
@@ -532,13 +609,12 @@ elif page == "missed":
                 else:
                     name, missed_dates = result
                     
-                    st.success(f" Report for **{name}** (ID: {employee_id})")
+                    st.success(f"📊 Report for **{name}** (ID: {employee_id})")
                     st.info(f"Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
                     
                     if missed_dates:
-                        st.warning(f" **Total Missed Days:** {len(missed_dates)}")
+                        st.warning(f"⚠️ **Total Missed Days:** {len(missed_dates)}")
                         
-                        # Create dataframe
                         df = pd.DataFrame(missed_dates, columns=["Date"])
                         df["Day"] = pd.to_datetime(df["Date"]).dt.day_name()
                         
@@ -546,40 +622,48 @@ elif page == "missed":
                     else:
                         st.success("✅ No missed days! Perfect attendance!")
 
-
 elif page == "delete":
 
-    st.markdown("### Delete Employee")
-    st.warning(" **Warning:** This action will permanently delete the employee and all their attendance records!")
+    st.markdown("### 🗑️ Delete Employee")
+    st.warning("⚠️ **Warning:** This action will permanently delete the employee and all their attendance records!")
 
     with st.form("delete_form"):
-        employee_id = st.text_input("Employee ID", placeholder="e.g., EMP001").upper()
+        # Get all employees for dropdown
+        employees = system.get_all_employees()
         
-        confirm = st.checkbox("I understand this action cannot be undone")
-        
-        submitted = st.form_submit_button("🗑️ Delete Employee", use_container_width=True)
-        
-        if submitted:
-            if not employee_id:
-                st.error(" Please enter Employee ID")
-            elif not confirm:
-                st.error(" Please confirm that you understand this action")
-            else:
-                success, msg = system.delete_employee(employee_id)
-                
-                if success:
-                    st.success(f"✅ {msg}")
-                    # Clear cache to update dashboard
-                    get_dashboard_data.clear()
+        if not employees:
+            st.warning("⚠️ No employees to delete.")
+            st.form_submit_button("Delete", disabled=True)
+        else:
+            employee_options = {f"{emp[1]} ({emp[0]})": emp[0] for emp in employees}
+            
+            selected_employee = st.selectbox(
+                "Select Employee to Delete",
+                options=list(employee_options.keys())
+            )
+            
+            confirm = st.checkbox("I understand this action cannot be undone")
+            
+            submitted = st.form_submit_button("🗑️ Delete Employee", use_container_width=True)
+            
+            if submitted:
+                if not confirm:
+                    st.error("⚠️ Please confirm that you understand this action")
                 else:
-                    st.error(f"❌ {msg}")
-
+                    employee_id = employee_options[selected_employee]
+                    success, msg = system.delete_employee(employee_id)
+                    
+                    if success:
+                        st.success(f"✅ {msg}")
+                        get_dashboard_data.clear()
+                    else:
+                        st.error(f"❌ {msg}")
 # Footer
 st.markdown("---")
 st.markdown(
-    """
+    f"""
     <div style='text-align: center; color: #6c757d; padding: 1rem;'>
-        <small>Indexers Attendance System v1.0 | Data Entry Department | Azul Tech © 2025</small>
+        <small>Indexers Attendance System v2.0 | Logged in as: {st.session_state.admin_username} | Azul Tech © 2025</small>
     </div>
     """,
     unsafe_allow_html=True
