@@ -37,6 +37,8 @@ if "admin_username" not in st.session_state:
     st.session_state.admin_username = None
 if "page" not in st.session_state:
     st.session_state.page = "dashboard"
+if "show_reset_password" not in st.session_state:
+    st.session_state.show_reset_password = False
 
 
 system = AttendanceSystem()
@@ -50,60 +52,85 @@ def get_dashboard_data():
     }
 
 if not st.session_state.logged_in:
-    st.markdown('<div class="main-header"> Admin Login</div>', unsafe_allow_html=True)
-    
-    # Check if admin exists
+
+    st.markdown('<div class="main-header">Admin Login</div>', unsafe_allow_html=True)
+
+    # ---- ADMIN SETUP (FIRST TIME ONLY) ----
     if not system.admin_exists():
         st.info("👋 **Welcome!** No admin account exists yet. Please create one to get started.")
-        
+
         with st.form("setup_form"):
             st.markdown("### Create Admin Account")
-            username = st.text_input("Username", placeholder="Enter admin username")
-            password = st.text_input("Password", type="password", placeholder="Minimum 6 characters")
-            password_confirm = st.text_input("Confirm Password", type="password", placeholder="Re-enter password")
-            
-            submitted = st.form_submit_button("✅ Create Admin Account", use_container_width=True)
-            
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            confirm = st.text_input("Confirm Password", type="password")
+
+            submitted = st.form_submit_button("✅ Create Admin")
+
             if submitted:
                 if not username or not password:
-                    st.error("⚠️ Please fill in all fields")
-                elif password != password_confirm:
-                    st.error("⚠️ Passwords do not match")
-                elif len(password) < 6:
-                    st.error("⚠️ Password must be at least 6 characters")
+                    st.error("Fill all fields")
+                elif password != confirm:
+                    st.error("Passwords do not match")
                 else:
                     success, msg = system.register_admin(username, password)
                     if success:
-                        st.success(f"✅ {msg}")
-                        st.info("Please login with your new credentials below.")
+                        st.success(msg)
                         st.rerun()
                     else:
-                        st.error(f"❌ {msg}")
-    
+                        st.error(msg)
+
+    # ---- NORMAL LOGIN ----
     else:
-        # Login form
-        with st.form("login_form"):
-            st.markdown("### Login to Continue")
-            username = st.text_input("Username", placeholder="Enter your username")
-            password = st.text_input("Password", type="password", placeholder="Enter your password")
-            
-            submitted = st.form_submit_button(" Login", use_container_width=True)
-            
-            if submitted:
-                if not username or not password:
-                    st.error("⚠️ Please enter both username and password")
-                else:
-                    success, msg = system.verify_admin(username, password)
+        if st.session_state.show_reset_password:
+            st.markdown("### Reset Password")
+
+            with st.form("reset_form"):
+                user = st.text_input("Username")
+                new_pass = st.text_input("New Password", type="password")
+                confirm = st.text_input("Confirm Password", type="password")
+
+                submitted = st.form_submit_button("Reset")
+
+                if submitted:
+                    if new_pass != confirm:
+                        st.error("Passwords do not match")
+                    else:
+                        success, msg = system.reset_admin_password(user, new_pass)
+                        if success:
+                            st.success(msg)
+                            st.session_state.show_reset_password = False
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+            if st.button("← Back to Login"):
+                st.session_state.show_reset_password = False
+                st.rerun()
+
+        else:
+            with st.form("login_form"):
+                st.markdown("### Login")
+                user = st.text_input("Username")
+                pwd = st.text_input("Password", type="password")
+
+                submitted = st.form_submit_button("Login")
+
+                if submitted:
+                    success, msg = system.verify_admin(user, pwd)
                     if success:
                         st.session_state.logged_in = True
-                        st.session_state.admin_username = username
-                        st.success(f"✅ Welcome back, {username}!")
+                        st.session_state.admin_username = user
                         st.rerun()
                     else:
-                        st.error(f"❌ {msg}")
+                        st.error(msg)
 
+            if st.button(" Forgot Password?"):
+                st.session_state.show_reset_password = True
+                st.rerun()
+
+    # HARD STOP — NOTHING BELOW RUNS
     st.stop()
-
 
 # ---- SIDEBAR ----
 st.sidebar.title("📋 Navigation")
@@ -388,19 +415,19 @@ if page == "dashboard":
 elif page == "register":
 
     st.markdown("### Register New Employee")
-    st.caption("Employee ID will be auto-generated")  # ← ADD THIS
+    
 
 
     with st.form("register_form"):
         col1, col2 = st.columns(2)
 
         with col1:
-            name = st.text_input("Full Name *", placeholder="e.g., John Doe")
+            name = st.text_input("Full Name *", placeholder="")
 
         with col2:
             department = st.text_input("Department", value="Data Entry")
 
-        submitted = st.form_submit_button("✅ Register Employee", use_container_width=True)
+        submitted = st.form_submit_button(" Register Employee", use_container_width=True)
 
         if submitted:
             if not name:  # ← SIMPLIFIED
@@ -416,7 +443,7 @@ elif page == "register":
 
 elif page == "attendance":
 
-    st.markdown("### ✅ Mark Attendance")
+    st.markdown("### Mark Attendance")
     st.caption("Select employee and shift to mark attendance")
 
 # Get all employees for dropdown
@@ -438,7 +465,7 @@ elif page == "attendance":
                 placeholder="Choose an employee..."
             )
 
-            submitted = st.form_submit_button(f"✅ Mark {shift} Attendance", use_container_width=True)
+            submitted = st.form_submit_button(f" Mark {shift} Attendance", use_container_width=True)
 
             if submitted:
                 if not selected_employee:
@@ -588,7 +615,7 @@ elif page == "missed":
             with col2:
                 end_date = st.date_input("End Date", value=datetime.now())
             
-            submitted = st.form_submit_button("🔍 Check Missed Days", use_container_width=True)
+            submitted = st.form_submit_button(" Check Missed Days", use_container_width=True)
             
             if submitted:
                 employee_id = employee_options[selected_employee]
@@ -619,8 +646,8 @@ elif page == "missed":
 
 elif page == "delete":
 
-    st.markdown("### 🗑️ Delete Employee")
-    st.warning("⚠️ **Warning:** This action will permanently delete the employee and all their attendance records!")
+    st.markdown("### Delete Employee")
+    st.warning(" **Warning:** This action will permanently delete the employee and all their attendance records!")
 
     with st.form("delete_form"):
         # Get all employees for dropdown

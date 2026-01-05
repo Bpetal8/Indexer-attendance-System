@@ -203,6 +203,53 @@ class AttendanceSystem:
         finally:
             self.close_connection(conn)
 
+    def reset_admin_password(self, username, new_password):
+        """Reset admin password"""
+        if len(new_password) < 6:
+            return False, "Password must be at least 6 characters"
+        
+        conn = self.get_connection()
+        c = conn.cursor()
+        
+        try:
+            # Check if admin exists
+            c.execute(
+                f"SELECT username FROM admins WHERE username = {self.q()}",
+                (username,)
+            )
+            result = c.fetchone()
+            
+            if not result:
+                return False, f"✗ Admin '{username}' not found"
+            
+            # Update password
+            new_hash = self.hash_password(new_password)
+            c.execute(
+                f"UPDATE admins SET password_hash = {self.q()} WHERE username = {self.q()}",
+                (new_hash, username)
+            )
+            conn.commit()
+            return True, f"✓ Password reset successfully for {username}"
+        
+        except Exception as e:
+            conn.rollback()
+            return False, f"✗ Password reset failed: {str(e)}"
+        finally:
+            self.close_connection(conn)
+
+
+    def list_all_admins(self):
+        """List all admin usernames (helpful for password reset)"""
+        conn = self.get_connection()
+        c = conn.cursor()
+        
+        try:
+            c.execute("SELECT username, created_at FROM admins ORDER BY created_at")
+            rows = c.fetchall()
+            return rows
+        finally:
+            self.close_connection(conn)
+
     def admin_exists(self):
         """Check if any admin exists"""
         conn = self.get_connection()
