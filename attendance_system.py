@@ -5,11 +5,19 @@ import os
 import psycopg2
 from psycopg2 import errors, pool
 
+# ENV Mode
+IS_PRODUCTION = os.environ.get("ENV") == "production"
+
 # trigger streamlit restart
 class AttendanceSystem:
     def __init__(self):
         # Detect cloud database (Postgres)
-        self.use_postgres = "DATABASE_URL" in os.environ
+        if IS_PRODUCTION:
+            if "DATABASE_URL" not in os.environ:
+                raise RuntimeError("❌ DATABASE_URL is missing in production!")
+            self.use_postgres = True
+        else:
+            self.use_postgres = "DATABASE_URL" in os.environ
 
         # DEBUG
         print("USING POSTGRES:", self.use_postgres)
@@ -34,21 +42,10 @@ class AttendanceSystem:
 
     def get_connection(self):
         if self.use_postgres:
-            if self.connection_pool:
-                try:
-                    return self.connection_pool.getconn()
-                except Exception as e:
-                    print(f"Pool connection failed, using direct: {e}")
-                    return psycopg2.connect(
-                        os.environ["DATABASE_URL"],
-                        sslmode="require"
-                    )
-            else:
-                return psycopg2.connect(
-                    os.environ["DATABASE_URL"],
-                    sslmode="require"
-                )
+            ...
         else:
+            if IS_PRODUCTION:
+                raise RuntimeError("❌ SQLite is forbidden in production")
             return sqlite3.connect(self.db_path, check_same_thread=False)
     
     def close_connection(self, conn):
