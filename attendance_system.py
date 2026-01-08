@@ -64,85 +64,88 @@ class AttendanceSystem:
 
     # ---------------- DATABASE INIT ----------------
 
-    def init_database(self):
-        conn = self.get_connection()
-        c = conn.cursor()
+    conn = self.get_connection()
 
-        try:
-            if self.use_postgres:
-                # ADD THIS ADMINS TABLE FIRST ↓
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS admins (
-                        id SERIAL PRIMARY KEY,
-                        username TEXT UNIQUE NOT NULL,
-                        password_hash TEXT NOT NULL,
-                        created_at TEXT
-                    );
-                """)
-                
-                # THEN MODIFY EMPLOYEES TABLE (remove pin_hash) ↓
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS employees (
-                        id SERIAL PRIMARY KEY,
-                        employee_id TEXT UNIQUE NOT NULL,
-                        name TEXT NOT NULL,
-                        department TEXT,
-                        added_date TEXT
-                    );
-                """)
+    if conn is None:
+        raise Exception("❌ Database connection failed. Check Postgres credentials or env vars.")
 
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS attendance (
-                        id SERIAL PRIMARY KEY,
-                        employee_id TEXT,
-                        employee_name TEXT,
-                        date TEXT,
-                        shift TEXT,
-                        time TEXT,
-                        UNIQUE(employee_id, date, shift)
-                    );
-                """)
-            else:
-                # ADD THIS ADMINS TABLE FIRST ↓
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS admins (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        username TEXT UNIQUE NOT NULL,
-                        password_hash TEXT NOT NULL,
-                        created_at TEXT
-                    );
-                """)
-                
-                # THEN MODIFY EMPLOYEES TABLE (remove pin_hash) ↓
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS employees (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        employee_id TEXT UNIQUE NOT NULL,
-                        name TEXT NOT NULL,
-                        department TEXT,
-                        added_date TEXT
-                    );
-                """)
+    c = conn.cursor()
 
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS attendance (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        employee_id TEXT,
-                        employee_name TEXT,
-                        date TEXT,
-                        shift TEXT,
-                        time TEXT,
-                        UNIQUE(employee_id, date, shift)
-                    );
-                """)
+    try:
+        if self.use_postgres:
+            # ADD THIS ADMINS TABLE FIRST ↓
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS admins (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT
+                );
+            """)
+            
+            # THEN MODIFY EMPLOYEES TABLE (remove pin_hash) ↓
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS employees (
+                    id SERIAL PRIMARY KEY,
+                    employee_id TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    department TEXT,
+                    added_date TEXT
+                );
+            """)
 
-            conn.commit()
-            print("✓ Database initialized successfully")
-        except Exception as e:
-            print(f"✗ Database initialization failed: {e}")
-            raise
-        finally:
-            self.close_connection(conn)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS attendance (
+                    id SERIAL PRIMARY KEY,
+                    employee_id TEXT,
+                    employee_name TEXT,
+                    date TEXT,
+                    shift TEXT,
+                    time TEXT,
+                    UNIQUE(employee_id, date, shift)
+                );
+            """)
+        else:
+            # ADD THIS ADMINS TABLE FIRST ↓
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS admins (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TEXT
+                );
+            """)
+            
+            # THEN MODIFY EMPLOYEES TABLE (remove pin_hash) ↓
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS employees (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    employee_id TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    department TEXT,
+                    added_date TEXT
+                );
+            """)
+
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS attendance (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    employee_id TEXT,
+                    employee_name TEXT,
+                    date TEXT,
+                    shift TEXT,
+                    time TEXT,
+                    UNIQUE(employee_id, date, shift)
+                );
+            """)
+
+        conn.commit()
+        print("✓ Database initialized successfully")
+    except Exception as e:
+        print(f"✗ Database initialization failed: {e}")
+        raise
+    finally:
+        self.close_connection(conn)
 
     # ---------------- SECURITY ----------------
 
