@@ -1,79 +1,51 @@
-import sqlite3
 from datetime import datetime, timedelta
-import hashlib
 import os
 import psycopg2
+import bcrypt
 from psycopg2 import errors, pool
 
 # ENV Mode
-IS_PRODUCTION = os.environ.get("ENV") == "production"
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("❌ DATABASE_URL is not set")
 
 # trigger streamlit restart
 class AttendanceSystem:
     def __init__(self):
-        # Detect cloud database (Postgres)
-        if IS_PRODUCTION:
-            if "DATABASE_URL" not in os.environ:
-                raise RuntimeError("❌ DATABASE_URL is missing in production!")
-            self.use_postgres = True
-        else:
-            self.use_postgres = "DATABASE_URL" in os.environ
+        try:
+            self.connection_pool = pool.SimpleConnectionPool(
+                1, 10,
+                DATABASE_URL,
+                sslmode="require"
+            )
+            print("✓ PostgreSQL connection pool created")
+        except Exception as e:
+            raise RuntimeError(f"❌ Failed to create PostgreSQL pool: {e}")
 
-        # DEBUG
-        print("USING POSTGRES:", self.use_postgres)
-
-        # SQLite path (local only)
-        self.db_path = "attendance.db"
-
-        self.connection_pool = None
-        if self.use_postgres:
-            try:
-                self.connection_pool = pool.SimpleConnectionPool(
-                   1, 10,  # min and max connections
-                os.environ["DATABASE_URL"],
-                sslmode="require"  
-                )
-                print("✓ PostgreSQL connection pool created")
-            except Exception as e:
-                print(f"✗ Failed to create connection pool: {e}")
         self.init_database()
 
     # ---------------- DATABASE CONNECTION ----------------
 
     def get_connection(self):
-        if self.use_postgres:
-            ...
-        else:
-            if IS_PRODUCTION:
-                raise RuntimeError("❌ SQLite is forbidden in production")
-            return sqlite3.connect(self.db_path, check_same_thread=False)
-    
+        return self.connection_pool.getconn()
+
     def close_connection(self, conn):
-        """Properly close or return connection to pool"""
-        if self.use_postgres and self.connection_pool:
-            self.connection_pool.putconn(conn)
-        else:
-            conn.close()
+        self.connection_pool.putconn(conn)
 
     # Placeholder helper
     def q(self):
-        return "%s" if self.use_postgres else "?"
+        return "%s"
 
     def placeholders(self, n):
-        return ", ".join([self.q()] * n)
+        return ", ".join(["%s"] * n)
 
-    # ---------------- DATABASE INIT ----------------
+    # ---------------- DATABASE INITIALIZATION ----------------
 
-    conn = self.get_connection()
+    def init_database(self):
+        conn = self.get_connection()
+        c = conn.cursor()
 
-    if conn is None:
-        raise Exception("❌ Database connection failed. Check Postgres credentials or env vars.")
-
-    c = conn.cursor()
-
-    try:
-        if self.use_postgres:
-            # ADD THIS ADMINS TABLE FIRST ↓
+        try:
             c.execute("""
                 CREATE TABLE IF NOT EXISTS admins (
                     id SERIAL PRIMARY KEY,
@@ -82,8 +54,7 @@ class AttendanceSystem:
                     created_at TEXT
                 );
             """)
-            
-            # THEN MODIFY EMPLOYEES TABLE (remove pin_hash) ↓
+
             c.execute("""
                 CREATE TABLE IF NOT EXISTS employees (
                     id SERIAL PRIMARY KEY,
@@ -105,53 +76,12 @@ class AttendanceSystem:
                     UNIQUE(employee_id, date, shift)
                 );
             """)
-        else:
-            # ADD THIS ADMINS TABLE FIRST ↓
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS admins (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    created_at TEXT
-                );
-            """)
-            
-            # THEN MODIFY EMPLOYEES TABLE (remove pin_hash) ↓
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS employees (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    employee_id TEXT UNIQUE NOT NULL,
-                    name TEXT NOT NULL,
-                    department TEXT,
-                    added_date TEXT
-                );
-            """)
 
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS attendance (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    employee_id TEXT,
-                    employee_name TEXT,
-                    date TEXT,
-                    shift TEXT,
-                    time TEXT,
-                    UNIQUE(employee_id, date, shift)
-                );
-            """)
+            conn.commit()
+            print("✓ Database initialized successfully")
 
-        conn.commit()
-        print("✓ Database initialized successfully")
-    except Exception as e:
-        print(f"✗ Database initialization failed: {e}")
-        raise
-    finally:
-        self.close_connection(conn)
-
-    # ---------------- SECURITY ----------------
-
-    def hash_password(self, password):
-        return hashlib.sha256(password.encode()).hexdigest()
-
+        finally:
+            self.close_connection(conn)
     # ---------------- ADMIN FUNCTIONS ----------------
 
     def register_admin(self, username, password):
@@ -159,7 +89,8 @@ class AttendanceSystem:
         if len(password) < 6:
             return False, "Password must be at least 6 characters"
 
-        password_hash = self.hash_password(password)
+        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
         conn = self.get_connection()
         c = conn.cursor()
 
@@ -171,7 +102,7 @@ class AttendanceSystem:
             )
             conn.commit()
             return True, f"✓ Admin {username} registered successfully"
-        except (sqlite3.IntegrityError, errors.UniqueViolation):
+        except errors.UniqueViolation:
             conn.rollback()
             return False, f"✗ Username {username} already exists"
         except Exception as e:
@@ -181,25 +112,26 @@ class AttendanceSystem:
             self.close_connection(conn)
 
     def verify_admin(self, username, password):
-        """Verify admin credentials"""
         conn = self.get_connection()
         c = conn.cursor()
 
         try:
-            c.execute(
-                f"SELECT password_hash FROM admins WHERE username = {self.q()}",
-                (username,)
-            )
-            result = c.fetchone()
+            c.execute("SELECT password_hash FROM admins WHERE username = %s", (username,))
+            row = c.fetchone()
 
-            if not result:
-                return False, "Invalid username or password"
+            if not row:
+                return False, "Admin not found"
 
-            stored_hash = result[0]
-            if self.hash_password(password) == stored_hash:
+            stored_hash = row[0]
+
+            if bcrypt.checkpw(password.encode(), stored_hash.encode()):
                 return True, "Login successful"
             else:
-                return False, "Invalid username or password"
+                return False, "Wrong password"
+
+        except Exception as e:
+            return False, str(e)
+
         finally:
             self.close_connection(conn)
 
@@ -223,7 +155,7 @@ class AttendanceSystem:
                 return False, f"✗ Admin '{username}' not found"
             
             # Update password
-            new_hash = self.hash_password(new_password)
+            new_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
             c.execute(
                 f"UPDATE admins SET password_hash = {self.q()} WHERE username = {self.q()}",
                 (new_hash, username)
@@ -355,12 +287,12 @@ class AttendanceSystem:
             )
             conn.commit()
             return True, f"✓ Attendance marked for {employee_name} - {shift} shift"
-        except (sqlite3.IntegrityError, errors.UniqueViolation):
+        except errors.UniqueViolation:
             conn.rollback()
-            return False, f"✗ Attendance already marked for {shift} shift today"
+            return False, f" Attendance already marked for {shift} shift today"
         except Exception as e:
             conn.rollback()
-            return False, f"✗ Failed to mark attendance: {str(e)}"
+            return False, f" Failed to mark attendance: {str(e)}"
         finally:
             self.close_connection(conn)
 
