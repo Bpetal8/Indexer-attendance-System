@@ -2,11 +2,12 @@ import streamlit as st
 from attendance_system import AttendanceSystem
 import pandas as pd 
 from datetime import datetime, timedelta
+from pdf_utils import generate_attendance_pdf
 
 #Page configuration
 st.set_page_config(
     page_title="Indexers Attendance System",
-    page_icon="📋",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -65,7 +66,7 @@ if not st.session_state.logged_in:
             password = st.text_input("Password", type="password")
             confirm = st.text_input("Confirm Password", type="password")
 
-            submitted = st.form_submit_button("✅ Create Admin")
+            submitted = st.form_submit_button(" Create Admin")
 
             if submitted:
                 if not username or not password:
@@ -133,7 +134,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ---- SIDEBAR ----
-st.sidebar.title("📋 Navigation")
+st.sidebar.title(" Navigation")
 st.sidebar.markdown(f"**Logged in as:** {st.session_state.admin_username}")
 st.sidebar.markdown("---")
 
@@ -144,7 +145,8 @@ menu_items = [
     (" Reports", "reports"),
     (" View Employees", "employees"),
     (" Missed Days", "missed"),
-    (" Delete Employee", "delete"),
+    (" Deactivate Employee", "deactivate"),
+    (" Employee Archive", "archive")
 ]
 
 for label, key in menu_items:
@@ -365,6 +367,23 @@ div[data-testid="stDataFrame"] tbody tr:hover td {
     border-radius: 14px;
 }
 
+/*  RESPONSIVENESS */
+/* =========================
+   Stack columns on mobile/tablet
+========================= */
+@media (max-width: 768px) {
+    [data-testid="column"] {
+        width: 100% !important;
+        min-width: 100% !important;
+    }
+}
+
+/* ← NEW: RADIO BUTTONS - MOBILE */
+@media (max-width: 768px) {
+    div[role="radiogroup"] {
+        flex-direction: column !important;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -406,7 +425,7 @@ if page == "dashboard":
     st.markdown("###  Today's Attendance Records")
 
     if today_records:
-        df = pd.DataFrame(today_records, columns=["Employee ID", "Name", "Shift", "Time"])
+        df = pd.DataFrame(today_records, columns=["Employee ID", "Name", "Shift", "Time", "Status"])
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.info("No attendance records for today yet.")
@@ -425,32 +444,41 @@ elif page == "register":
             name = st.text_input("Full Name *", placeholder="")
 
         with col2:
-            department = st.text_input("Department", value="Data Entry")
+            department = st.text_input("Department", value="Data Entry", disabled=True)
 
         submitted = st.form_submit_button(" Register Employee", use_container_width=True)
 
         if submitted:
             if not name:  # ← SIMPLIFIED
-                st.error("⚠️ Please enter employee name")
+                st.error(" Please enter employee name")
             else:
                 success, msg = system.register_employee(name, department)  # ← ONLY 2 PARAMS
                 if success:
-                    st.success(f"✅ {msg}")
+                    st.success(f" {msg}")
                     get_dashboard_data.clear()
                 else:
-                    st.error(f"❌ {msg}")
+                    st.error(f" {msg}")
 
 
 elif page == "attendance":
 
-    st.markdown("### Mark Attendance")
+    st.markdown("###  Mark Attendance")
     st.caption("Select employee and shift to mark attendance")
+    
+    # Show shift timings info
+    st.info("""
+    **Shift Timings:**
+    -  Morning: 7:00 AM - 1:00 PM (Grace period: 8:00 AM)
+    -  Afternoon: 2:00 PM - 8:00 PM (Grace period: 2:00 PM)
+    
+    *Attendance marked after grace period will be flagged as LATE*
+    """)
 
-# Get all employees for dropdown
+    # Get all employees for dropdown
     employees = system.get_all_employees()
 
     if not employees:
-        st.warning("⚠️ No employees registered yet. Please register employees first.")
+        st.warning(" No employees registered yet. Please register employees first.")
     else:
         employee_options = {f"{emp[1]} ({emp[0]})": emp[0] for emp in employees}
         
@@ -465,29 +493,57 @@ elif page == "attendance":
                 placeholder="Choose an employee..."
             )
 
-            submitted = st.form_submit_button(f" Mark {shift} Attendance", use_container_width=True)
+            arrival_date = st.date_input(
+                "Arrival Date",
+                value=datetime.now().date()
+            )
+
+            arrival_time = st.time_input(
+                "Arrival Time",
+                value=datetime.now().replace(second=0, microsecond=0).time(),
+                step=timedelta(minutes=1)
+            )
+
+            submitted = st.form_submit_button(
+                f" Mark {shift} Attendance",
+                use_container_width=True
+            )
 
             if submitted:
                 if not selected_employee:
-                    st.error("⚠️ Please select an employee")
+                    st.error(" Please select an employee")
+
                 else:
-                    employee_id = employee_options[selected_employee]
-                    success, msg = system.mark_attendance(employee_id, shift)  # ← DIRECT CALL
-                    
-                    if success:
-                        st.success(f"✅ {msg}")
-                        get_dashboard_data.clear()
+                    arrival_datetime = datetime.combine(arrival_date, arrival_time)
+
+                    if arrival_datetime > datetime.now():
+                        st.error(" Arrival time cannot be in the future")
+
                     else:
-                        st.warning(f"⚠️ {msg}")
+                        employee_id = employee_options[selected_employee]
+                        success, msg = system.mark_attendance(
+                            employee_id,
+                            shift,
+                            arrival_datetime
+                        )
+
+                        if success:
+                            if "Late" in msg:
+                                st.warning(f" {msg}")
+                            else:
+                                st.success(f" {msg}")
+                            get_dashboard_data.clear()
+                        else:
+                            st.error(f" {msg}")
+        
         # Show today's attendance below form
         st.markdown("---")
-        st.markdown("### Recent Attendance")
+        st.markdown("###  Recent Attendance")
         
         today_records = system.get_today_attendance()
         if today_records:
-            df = pd.DataFrame(today_records[:10], columns=["Employee ID", "Name", "Shift", "Time"])
+            df = pd.DataFrame(today_records[:10], columns=["Employee ID", "Name", "Shift", "Time", "Status"])
             st.dataframe(df, use_container_width=True, hide_index=True)
-
 
 elif page == "reports":
 
@@ -501,20 +557,25 @@ elif page == "reports":
         today_records = system.get_today_attendance()
         
         if today_records:
-            df = pd.DataFrame(today_records, columns=["Employee ID", "Name", "Shift", "Time"])
+            df = pd.DataFrame(today_records, columns=["Employee ID", "Name", "Shift", "Time", "Status"])
             
             st.markdown(f"**Total Records:** {len(today_records)}")
             st.dataframe(df, use_container_width=True, hide_index=True)
             
             # Download button
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download CSV",
-                data=csv,
-                file_name=f"attendance_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
+            pdf = generate_attendance_pdf(
+                title="Today's Attendance Report",
+                columns=df.columns.tolist(),
+                data=df.values.tolist()
             )
+
+            st.download_button(
+                label=" Download PDF",
+                data=pdf,
+                file_name=f"attendance_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+)
         else:
             st.info("No attendance records for today.")
 
@@ -534,36 +595,43 @@ elif page == "reports":
             )
             
             if records:
-                df = pd.DataFrame(records, columns=["Employee ID", "Name", "Date", "Shift", "Time"])
+                df = pd.DataFrame(records, columns=["Employee ID", "Name", "Date", "Shift", "Time", "Status"])
                 
                 st.markdown(f"**Total Records:** {len(records)}")
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 
                 # Download button
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download CSV",
-                    data=csv,
-                    file_name=f"attendance_{start_date}_{end_date}.csv",
-                    mime="text/csv",
-                    use_container_width=True
+                pdf = generate_attendance_pdf(
+                    title=f"Attendance Report ({start_date} to {end_date})",
+                    columns=df.columns.tolist(),
+                    data=df.values.tolist()
                 )
+
+                st.download_button(
+                    label=" Download PDF",
+                    data=pdf,
+                    file_name=f"attendance_{start_date}_{end_date}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+)
             else:
                 st.info("No records found for this date range.")
 
 
 elif page == "employees":
 
-    st.markdown("### All Registered Employees")
+    st.markdown("###  All Registered Employees")
 
     employees = system.get_all_employees()
     
-    if employees:
+    if not employees:
+        st.info("No employees registered yet.")
+    else:
         df = pd.DataFrame(employees, columns=["Employee ID", "Name", "Department", "Registered Date"])
         
         st.markdown(f"**Total Employees:** {len(employees)}")
         
-        # Search functionality
+        # Search
         search = st.text_input("🔍 Search by Name or ID", placeholder="Type to search...")
         
         if search:
@@ -571,33 +639,60 @@ elif page == "employees":
                 df["Name"].str.contains(search, case=False) | 
                 df["Employee ID"].str.contains(search, case=False)
             ]
-        
+
         st.dataframe(df, use_container_width=True, hide_index=True)
-        
-        # Download button
-        csv = df.to_csv(index=False)
+
+        st.markdown("---")
+        st.markdown("## Edit Employee")
+
+        # Select employee to edit
+        options = {f"{e[1]} ({e[0]})": e for e in employees}
+        selected = st.selectbox("Select Employee to Edit", list(options.keys()))
+
+        selected_emp = options[selected]
+        emp_id = selected_emp[0]
+        current_name = selected_emp[1]
+        current_dept = selected_emp[2]
+
+        new_name = st.text_input("Full Name", value=current_name)
+        new_dept = st.text_input("Department", value=current_dept, disabled=True)
+
+        if st.button(" Save", use_container_width=True):
+            success, msg = system.update_employee(emp_id, new_name, new_dept)
+            if success:
+                st.success(msg)
+                get_dashboard_data.clear()
+                st.rerun()
+            else:
+                st.error(msg)
+
+        st.markdown("---")
+
+        # Download
+        pdf = generate_attendance_pdf(
+            title="Employee List",
+            columns=df.columns.tolist(),
+            data=df.values.tolist()
+        )
+
         st.download_button(
-            label="📥 Download Employee List",
-            data=csv,
-            file_name="employees.csv",
-            mime="text/csv",
+            label=" Download Employee List",
+            data=pdf,
+            file_name="employees.pdf",
+            mime="application/pdf",
             use_container_width=True
         )
-    else:
-        st.info("No employees registered yet.")
 
 
 elif page == "missed":
 
     st.markdown("###  Check Missed Days")
-
-    # REPLACE EVERYTHING BELOW WITH THIS ↓
     with st.form("missed_days_form"):
         # Get all employees for dropdown
         employees = system.get_all_employees()
         
         if not employees:
-            st.warning("⚠️ No employees registered yet.")
+            st.warning(" No employees registered yet.")
             st.form_submit_button("Check", disabled=True)
         else:
             employee_options = {f"{emp[1]} ({emp[0]})": emp[0] for emp in employees}
@@ -627,65 +722,122 @@ elif page == "missed":
                 )
                 
                 if error:
-                    st.error(f"❌ {error}")
+                    st.error(f" {error}")
                 else:
                     name, missed_dates = result
                     
-                    st.success(f"📊 Report for **{name}** (ID: {employee_id})")
+                    st.success(f" Report for **{name}** (ID: {employee_id})")
                     st.info(f"Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
                     
                     if missed_dates:
-                        st.warning(f"⚠️ **Total Missed Days:** {len(missed_dates)}")
+                        st.warning(f" **Total Missed Days:** {len(missed_dates)}")
                         
                         df = pd.DataFrame(missed_dates, columns=["Date"])
                         df["Day"] = pd.to_datetime(df["Date"]).dt.day_name()
                         
                         st.dataframe(df, use_container_width=True, hide_index=True)
                     else:
-                        st.success("✅ No missed days! Perfect attendance!")
+                        st.success(" No missed days! Perfect attendance!")
 
-elif page == "delete":
+elif page == "deactivate":
 
-    st.markdown("### Delete Employee")
-    st.warning(" **Warning:** This action will permanently delete the employee and all their attendance records!")
+    st.markdown("### Deactivate Employee")
+    st.warning(" Deactivated employees will not appear in lists and cannot mark attendance.")
 
-    with st.form("delete_form"):
+    with st.form("deactivate_form"):
         # Get all employees for dropdown
         employees = system.get_all_employees()
         
         if not employees:
-            st.warning("⚠️ No employees to delete.")
-            st.form_submit_button("Delete", disabled=True)
+            st.warning(" No active employees.")
+            st.form_submit_button("Deactivate", disabled=True)
         else:
             employee_options = {f"{emp[1]} ({emp[0]})": emp[0] for emp in employees}
             
             selected_employee = st.selectbox(
-                "Select Employee to Delete",
+                "Select Employee to Deactivate",
                 options=list(employee_options.keys())
             )
             
-            confirm = st.checkbox("I understand this action cannot be undone")
+            confirm = st.checkbox("I understand this will deactivate the employee (not delete)")
             
-            submitted = st.form_submit_button("🗑️ Delete Employee", use_container_width=True)
+            submitted = st.form_submit_button(" Deactivate Employee", use_container_width=True)
             
             if submitted:
                 if not confirm:
-                    st.error("⚠️ Please confirm that you understand this action")
+                    st.error(" Please confirm the action")
                 else:
                     employee_id = employee_options[selected_employee]
-                    success, msg = system.delete_employee(employee_id)
+                    success, msg = system.deactivate_employee(employee_id)
                     
                     if success:
-                        st.success(f"✅ {msg}")
+                        st.success(f" {msg}")
                         get_dashboard_data.clear()
+                        st.rerun()
                     else:
-                        st.error(f"❌ {msg}")
+                        st.error(f" {msg}")
+
+elif page == "archive":
+
+    st.markdown("### Employee Archive")
+    st.info(" These employees have been deactivated. You can reactivate them at any time.")
+
+    inactive_employees = system.get_inactive_employees()
+    
+    if inactive_employees:
+        df = pd.DataFrame(inactive_employees, columns=["Employee ID", "Name", "Department", "Registered Date"])
+        
+        st.markdown(f"**Total Deactivated Employees:** {len(inactive_employees)}")
+        
+        # Search functionality
+        search = st.text_input("🔍 Search by Name or ID", placeholder="Type to search...")
+        
+        if search:
+            df_display = df[
+                df["Name"].str.contains(search, case=False) | 
+                df["Employee ID"].str.contains(search, case=False)
+            ]
+        else:
+            df_display = df
+        
+        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        st.markdown("### Reactivate Employee")
+        
+        with st.form("reactivate_form"):
+            employee_options = {f"{emp[1]} ({emp[0]})": emp[0] for emp in inactive_employees}
+            
+            selected_employee = st.selectbox(
+                "Select Employee to Reactivate",
+                options=list(employee_options.keys())
+            )
+            
+            confirm = st.checkbox("I want to reactivate this employee")
+            
+            submitted = st.form_submit_button(" Reactivate Employee", use_container_width=True)
+            
+            if submitted:
+                if not confirm:
+                    st.error(" Please confirm the action")
+                else:
+                    employee_id = employee_options[selected_employee]
+                    success, msg = system.reactivate_employee(employee_id)
+                    
+                    if success:
+                        st.success(f" {msg}")
+                        get_dashboard_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(f" {msg}")
+    else:
+        st.success(" No deactivated employees. All employees are active!")
 # Footer
 st.markdown("---")
 st.markdown(
     f"""
     <div style='text-align: center; color: #6c757d; padding: 1rem;'>
-        <small>Indexers Attendance System v2.0 | Logged in as: {st.session_state.admin_username} | Azul Tech © 2025</small>
+        <small>Indexers Attendance System v2.0 | Logged in as: {st.session_state.admin_username} | Azul Tech © 2026</small>
     </div>
     """,
     unsafe_allow_html=True

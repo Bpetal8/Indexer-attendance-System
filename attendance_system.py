@@ -1,8 +1,13 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import os
 import psycopg2
 import bcrypt
 from psycopg2 import errors, pool
+
+SHIFT_CUTOFFS = {
+    "Morning": time(8, 0),      
+    "Afternoon": time(14, 0)    
+}
 
 # ENV Mode
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -72,9 +77,19 @@ class AttendanceSystem:
                     employee_name TEXT,
                     date TEXT,
                     shift TEXT,
-                    time TEXT,
+                    time TIME,
                     UNIQUE(employee_id, date, shift)
                 );
+            """)
+
+            c.execute("""
+                ALTER TABLE employees
+                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+            """)
+
+            c.execute("""
+                ALTER TABLE attendance
+                ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'On Time';
             """)
 
             conn.commit()
@@ -235,10 +250,10 @@ class AttendanceSystem:
                 (employee_id, name.strip(), department, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             )
             conn.commit()
-            return True, f"✓ Employee {name} registered with ID: {employee_id}"
+            return True, f" Employee {name} registered with ID: {employee_id}"
         except Exception as e:
             conn.rollback()
-            return False, f"✗ Registration failed: {str(e)}"
+            return False, f" Registration failed: {str(e)}"
         finally:
             self.close_connection(conn)
     
@@ -256,45 +271,186 @@ class AttendanceSystem:
             return result
         finally:
             self.close_connection(conn)
-
-    # ---------------- ATTENDANCE ----------------
-
-    def mark_attendance(self, employee_id, shift):
-        """Mark attendance (no PIN verification needed)"""
-        today = datetime.now().strftime("%Y-%m-%d")
-        current_time = datetime.now().strftime("%H:%M:%S")
+        
+    def update_employee(self, employee_id, new_name, new_department):
+        """Update employee name and department"""
+        if not new_name or not new_name.strip():
+            return False, "Employee name cannot be empty"
 
         conn = self.get_connection()
         c = conn.cursor()
 
-        try:  # ← Add try block
+        try:
+            # Check if employee exists and is active
             c.execute(
-                f"SELECT name FROM employees WHERE employee_id = {self.q()}",
+                "SELECT name FROM employees WHERE employee_id = %s AND is_active = TRUE",
                 (employee_id,)
             )
             result = c.fetchone()
 
             if not result:
-                return False, "Employee not found"  # ← No conn.close()
+                return False, "Employee not found or inactive"
+
+            # Update
+            c.execute(
+                """
+                UPDATE employees
+                SET name = %s, department = %s
+                WHERE employee_id = %s
+                """,
+                (new_name.strip(), new_department.strip(), employee_id)
+            )
+
+            conn.commit()
+            return True, f"✓ Employee updated successfully"
+
+        except Exception as e:
+            conn.rollback()
+            return False, f"✗ Failed to update employee: {str(e)}"
+        finally:
+            self.close_connection(conn)
+
+    def deactivate_employee(self, employee_id):
+        conn = self.get_connection()
+        c = conn.cursor()
+
+        try:
+            c.execute(
+                "SELECT name FROM employees WHERE employee_id = %s AND is_active = TRUE",
+                (employee_id,)
+            )
+            result = c.fetchone()
+
+            if not result:
+                return False, "Employee not found or already deactivated"
+
+            name = result[0]
+
+            c.execute(
+                "UPDATE employees SET is_active = FALSE WHERE employee_id = %s",
+                (employee_id,)
+            )
+
+            conn.commit()
+            return True, f"✓ Employee {name} has been deactivated"
+
+        except Exception as e:
+            conn.rollback()
+            return False, f"✗ Failed to deactivate employee: {str(e)}"
+        finally:
+            self.close_connection(conn)
+
+    def get_inactive_employees(self):
+        """Get all deactivated employees"""
+        conn = self.get_connection()
+        c = conn.cursor()
+
+        try:
+            c.execute("""
+                SELECT employee_id, name, department, added_date 
+                FROM employees 
+                WHERE is_active = FALSE
+                ORDER BY name
+            """)
+            rows = c.fetchall()
+            return rows
+        finally:
+            self.close_connection(conn)
+
+    def reactivate_employee(self, employee_id):
+        """Reactivate a deactivated employee"""
+        conn = self.get_connection()
+        c = conn.cursor()
+
+        try:
+            c.execute(
+                "SELECT name FROM employees WHERE employee_id = %s AND is_active = FALSE",
+                (employee_id,)
+            )
+            result = c.fetchone()
+
+            if not result:
+                return False, "Employee not found or already active"
+
+            name = result[0]
+
+            c.execute(
+                "UPDATE employees SET is_active = TRUE WHERE employee_id = %s",
+                (employee_id,)
+            )
+
+            conn.commit()
+            return True, f"✓ Employee {name} has been reactivated"
+
+        except Exception as e:
+            conn.rollback()
+            return False, f"✗ Failed to reactivate employee: {str(e)}"
+        finally:
+            self.close_connection(conn)
+
+    # ---------------- ATTENDANCE ----------------
+
+    def mark_attendance(self, employee_id, shift, arrival_datetime):
+        """
+        Mark attendance using admin-provided arrival time
+        """
+
+        if shift not in SHIFT_CUTOFFS:
+            return False, "Invalid shift selected"
+
+        cutoff_time = SHIFT_CUTOFFS[shift]
+        arrival_time_only = arrival_datetime.time()
+
+        if shift == "Morning" and arrival_time_only >= time(13, 0):
+            return False, "Invalid time for Morning shift"
+
+        if shift == "Afternoon" and arrival_time_only < time(13, 0):
+            return False, "Invalid time for Afternoon shift"
+
+        status = "Late" if arrival_time_only > cutoff_time else "On Time"
+
+        date_str = arrival_datetime.strftime("%Y-%m-%d")
+        time_str = arrival_datetime.strftime("%H:%M:%S")
+
+        conn = self.get_connection()
+        c = conn.cursor()
+
+        try:
+            # Validate employee
+            c.execute(
+                "SELECT name FROM employees WHERE employee_id = %s AND is_active = TRUE",
+                (employee_id,)
+            )
+            result = c.fetchone()
+
+            if not result:
+                return False, "Employee not found or inactive"
 
             employee_name = result[0]
 
             c.execute(
-                f"""INSERT INTO attendance
-                    (employee_id, employee_name, date, shift, time)
-                    VALUES ({self.placeholders(5)})""",
-                (employee_id, employee_name, today, shift, current_time)
+                """
+                INSERT INTO attendance
+                (employee_id, employee_name, date, shift, time, status)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (employee_id, employee_name, date_str, shift, time_str, status)
             )
+
             conn.commit()
-            return True, f"✓ Attendance marked for {employee_name} - {shift} shift"
+            return True, f"✓ Attendance marked for {employee_name} ({status})"
+
         except errors.UniqueViolation:
             conn.rollback()
-            return False, f" Attendance already marked for {shift} shift today"
+            return False, f"⚠️ Attendance already marked for {shift} shift on this date"
+
         except Exception as e:
             conn.rollback()
-            return False, f" Failed to mark attendance: {str(e)}"
+            return False, f"✗ Failed to mark attendance: {str(e)}"
+
         finally:
             self.close_connection(conn)
+
 
     # ---------------- REPORTS ----------------
 
@@ -303,9 +459,12 @@ class AttendanceSystem:
         c = conn.cursor()
 
         try:
-            c.execute(
-                "SELECT employee_id, name, department, added_date FROM employees ORDER BY name"
-            )
+            c.execute("""
+                SELECT employee_id, name, department, added_date 
+                    FROM employees 
+                    WHERE is_active = TRUE
+                    ORDER BY name
+            """)
             rows = c.fetchall()
             return rows
         finally:
@@ -319,7 +478,7 @@ class AttendanceSystem:
 
         try:
             c.execute(
-                f"""SELECT employee_id, employee_name, shift, time
+                f"""SELECT employee_id, employee_name, shift, time, status
                     FROM attendance
                     WHERE date = {self.q()}
                     ORDER BY time DESC""",
@@ -336,7 +495,7 @@ class AttendanceSystem:
 
         try:
             c.execute(
-                f"""SELECT employee_id, employee_name, date, shift, time
+                f"""SELECT employee_id, employee_name, date, shift, time, status
                     FROM attendance
                     WHERE date BETWEEN {self.q()} AND {self.q()}
                     ORDER BY date DESC, time DESC""",
