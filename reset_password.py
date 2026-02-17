@@ -1,5 +1,4 @@
-from attendance_system import AttendanceSystem  # Change 'attendance_system' to your actual file name
-
+from attendance_system import AttendanceSystem  
 system = AttendanceSystem()
 
 # First, see what admins exist
